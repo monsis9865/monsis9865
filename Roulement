@@ -1,0 +1,323 @@
+django-admin startproject investment_site
+cd investment_site
+
+python manage.py startapp investments
+
+from django.db import models
+from django.contrib.auth.models import User
+
+class Portfolio(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    name = models.CharField(max_length=100)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+class Investment(models.Model):
+    portfolio = models.ForeignKey(Portfolio, on_delete=models.CASCADE)
+    name = models.CharField(max_length=100)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    date = models.DateField()
+
+from django.shortcuts import render
+from .models import Portfolio, Investment
+
+def portfolio_list(request):
+    portfolios = Portfolio.objects.filter(user=request.user)
+    return render(request, 'investments/portfolio_list.html', {'portfolios': portfolios})
+
+def portfolio_detail(request, portfolio_id):
+    portfolio = Portfolio.objects.get(id=portfolio_id)
+    investments = Investment.objects.filter(portfolio=portfolio)
+    return render(request, 'investments/portfolio_detail.html', {'portfolio': portfolio, 'investments': investments})
+
+
+<!-- portfolio_list.html -->
+<h1>Mes Portefeuilles</h1>
+<ul>
+    {% for portfolio in portfolios %}
+        <li><a href="{% url 'portfolio_detail' portfolio.id %}">{{ portfolio.name }}</a></li>
+    {% endfor %}
+</ul>
+
+<!-- portfolio_detail.html -->
+<h1>{{ portfolio.name }}</h1>
+<ul>
+    {% for investment in investments %}
+        <li>{{ investment.name }}: {{ investment.amount }} ({{ investment.date }})</li>
+    {% endfor %}
+</ul>
+
+from django import forms
+from .models import Portfolio, Investment
+
+class PortfolioForm(forms.ModelForm):
+    class Meta:
+        model = Portfolio
+        fields = ['name']
+
+class InvestmentForm(forms.ModelForm):
+    class Meta:
+        model = Investment
+        fields = ['name', 'amount', 'date']
+
+
+from django.shortcuts import render, redirect
+from .forms import PortfolioForm, InvestmentForm
+
+def create_portfolio(request):
+    if request.method == 'POST':
+        form = PortfolioForm(request.POST)
+        if form.is_valid():
+            portfolio = form.save(commit=False)
+            portfolio.user = request.user
+            portfolio.save()
+            return redirect('portfolio_list')
+    else:
+        form = PortfolioForm()
+    return render(request, 'investments/create_portfolio.html', {'form': form})
+
+def create_investment(request, portfolio_id):
+    portfolio = Portfolio.objects.get(id=portfolio_id)
+    if request.method == 'POST':
+        form = InvestmentForm(request.POST)
+        if form.is_valid():
+            investment = form.save(commit=False)
+            investment.portfolio = portfolio
+            investment.save()
+            return redirect('portfolio_detail', portfolio_id=portfolio.id)
+    else:
+        form = InvestmentForm()
+    return render(request, 'investments/create_investment.html', {'form': form, 'portfolio': portfolio})
+
+
+<!-- create_portfolio.html -->
+<h1>Créer un Nouveau Portefeuille</h1>
+<form method="post">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button type="submit">Créer</button>
+</form>
+
+<!-- create_investment.html -->
+<h1>Ajouter un Investissement à {{ portfolio.name }}</h1>
+<form method="post">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button type="submit">Ajouter</button>
+</form>
+
+
+from django.urls import path
+from . import views
+
+urlpatterns = [
+    path('', views.portfolio_list, name='portfolio_list'),
+    path('portfolio/<int:portfolio_id>/', views.portfolio_detail, name='portfolio_detail'),
+    path('portfolio/create/', views.create_portfolio, name='create_portfolio'),
+    path('portfolio/<int:portfolio_id>/investment/create/', views.create_investment, name='create_investment'),
+]
+
+
+from django.contrib import admin
+from django.urls import path, include
+from django.contrib.auth import views as auth_views
+
+urlpatterns = [
+    path('admin/', admin.site.urls),
+    path('accounts/login/', auth_views.LoginView.as_view(), name='login'),
+    path('accounts/logout/', auth_views.LogoutView.as_view(), name='logout'),
+    path('', include('investments.urls')),
+]
+
+<!-- registration/login.html -->
+<h1>Connexion</h1>
+<form method="post">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button type="submit">Se connecter</button>
+</form>
+
+<!-- registration/logged_out.html -->
+<h1>Déconnexion réussie</h1>
+<p>Vous êtes maintenant déconnecté. <a href="{% url 'login' %}">Se reconnecter</a></p>
+
+from django.contrib.auth.decorators import login_required
+
+@login_required
+def portfolio_list(request):
+    portfolios = Portfolio.objects.filter(user=request.user)
+    return render(request, 'investments/portfolio_list.html', {'portfolios': portfolios})
+
+@login_required
+def portfolio_detail(request, portfolio_id):
+    portfolio = Portfolio.objects.get(id=portfolio_id)
+    investments = Investment.objects.filter(portfolio=portfolio)
+    return render(request, 'investments/portfolio_detail.html', {'portfolio': portfolio, 'investments': investments})
+
+
+<!-- base.html -->
+<nav>
+    <ul>
+        {% if user.is_authenticated %}
+            <li><a href="{% url 'logout' %}">Déconnexion</a></li>
+        {% else %}
+            <li><a href="{% url 'login' %}">Connexion</a></li>
+        {% endif %}
+    </ul>
+</nav>
+
+<!-- base.html -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+
+from django.http import JsonResponse
+
+@login_required
+def investment_data(request, portfolio_id):
+    portfolio = Portfolio.objects.get(id=portfolio_id)
+    investments = Investment.objects.filter(portfolio=portfolio)
+    data = {
+        'labels': [investment.name for investment in investments],
+        'data': [float(investment.amount) for investment in investments],
+    }
+    return JsonResponse(data)
+
+
+<h1>{{ portfolio.name }}</h1>
+<canvas id="investmentChart"></canvas>
+<script>
+    var ctx = document.getElementById('investmentChart').getContext('2d');
+    fetch("{% url 'investment_data' portfolio.id %}")
+        .then(response => response.json())
+        .then(data => {
+            new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: data.labels,
+                    datasets: [{
+                        label: 'Investissements',
+                        data: data.data,
+                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        });
+</script>
+
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.example.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = 'your-email@example.com'
+EMAIL_HOST_PASSWORD = 'your-email-password'
+from django.core.mail import send_mail
+
+def send_investment_email(user, investment):
+    subject = 'Nouvel investissement ajouté'
+    message = f'Bonjour {user.username},\n\nVous avez ajouté un nouvel investissement : {investment.name} pour un montant de {investment.amount}.'
+    send_mail(subject, message, 'from@example.com', [user.email])
+
+
+def create_investment(request, portfolio_id):
+    portfolio = Portfolio.objects.get(id=portfolio_id)
+    if request.method == 'POST':
+        form = InvestmentForm(request.POST)
+        if form.is_valid():
+            investment = form.save(commit=False)
+            investment.portfolio = portfolio
+            investment.save()
+            send_investment_email(request.user, investment)
+            return redirect('portfolio_detail', portfolio_id=portfolio.id)
+    else:
+        form = InvestmentForm()
+    return render(request, 'investments/create_investment.html', {'form': form, 'portfolio': portfolio})
+
+from django.db.models import Q
+
+@login_required
+def portfolio_list(request):
+    query = request.GET.get('q')
+    if query:
+        portfolios = Portfolio.objects.filter(
+            Q(name__icontains=query) & Q(user=request.user)
+        )
+    else:
+        portfolios = Portfolio.objects.filter(user=request.user)
+    return render(request, 'investments/portfolio_list.html', {'portfolios': portfolios, 'query': query})
+
+
+<h1>Mes Portefeuilles</h1>
+<form method="get" action=".">
+    <input type="text" name="q" value="{{ query }}" placeholder="Rechercher un portefeuille...">
+    <button type="submit">Rechercher</button>
+</form>
+<ul>
+    {% for portfolio in portfolios %}
+        <li><a href="{% url 'portfolio_detail' portfolio.id %}">{{ portfolio.name }}</a></li>
+    {% endfor %}
+</ul>
+
+
+@login_required
+def portfolio_detail(request, portfolio_id):
+    portfolio = Portfolio.objects.get(id=portfolio_id)
+    investments = Investment.objects.filter(portfolio=portfolio)
+
+    # Filtrage par date
+    start_date = request.GET.get('start_date')
+    end_date = request.GET.get('end_date')
+    if start_date and end_date:
+        investments = investments.filter(date__range=[start_date, end_date])
+
+    # Filtrage par montant
+    min_amount = request.GET.get('min_amount')
+    max_amount = request.GET.get('max_amount')
+    if min_amount and max_amount:
+        investments = investments.filter(amount__range=[min_amount, max_amount])
+
+    return render(request, 'investments/portfolio_detail.html', {
+        'portfolio': portfolio,
+        'investments': investments,
+        'start_date': start_date,
+        'end_date': end_date,
+        'min_amount': min_amount,
+        'max_amount': max_amount,
+    })
+
+<h1>{{ portfolio.name }}</h1>
+<form method="get" action=".">
+    <label for="start_date">Date de début :</label>
+    <input type="date" id="start_date" name="start_date" value="{{ start_date }}">
+    <label for="end_date">Date de fin :</label>
+    <input type="date" id="end_date" name="end_date" value="{{ end_date }}">
+    <label for="min_amount">Montant minimum :</label>
+    <input type="number" id="min_amount" name="min_amount" value="{{ min_amount }}">
+    <label for="max_amount">Montant maximum :</label>
+    <input type="number" id="max_amount" name="max_amount" value="{{ max_amount }}">
+    <button type="submit">Filtrer</button>
+</form>
+<ul>
+    {% for investment in investments %}
+        <li>{{ investment.name }}: {{ investment.amount }} ({{ investment.date }})</li>
+    {% endfor %}
+</ul>
+
+
+class Tariff(models.Model):
+    name = models.CharField(max_length=100)
+    description = models.TextField()
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+
+
+
